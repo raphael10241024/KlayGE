@@ -265,7 +265,7 @@ namespace KlayGE
 	void Context::LoadCfg(std::string const & cfg_file)
 	{
 #if defined(KLAYGE_PLATFORM_WINDOWS_DESKTOP)
-		static char const * available_rfs_array[] = { "D3D11", "OpenGL", "OpenGLES", "D3D12" };
+		static char const * available_rfs_array[] = { "D3D11", "OpenGL", "OpenGLES", "D3D12", "Vulkan", "NullRender" };
 		static char const * available_afs_array[] = { "OpenAL", "XAudio" };
 		static char const * available_adsfs_array[] = { "OggVorbis" };
 		static char const * available_ifs_array[] = { "MsgInput" };

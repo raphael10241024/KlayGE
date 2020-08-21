@@ -40,6 +40,41 @@
 
 namespace KlayGE
 {
+
+	struct SPIRVShaderDesc
+	{
+		struct ConstantBufferDesc
+		{
+			struct VariableDesc
+			{
+				std::string name;
+				uint32_t start_offset;
+				uint8_t type;
+				uint8_t rows;
+				uint8_t columns;
+				uint16_t elements;
+			};
+			std::vector<VariableDesc> var_desc;
+
+			std::string name;
+			size_t name_hash;
+			uint32_t size = 0;
+		};
+		std::vector<ConstantBufferDesc> cb_desc;
+
+		// uint16_t num_samplers = 0;
+		// uint16_t num_srvs = 0;
+		// uint16_t num_uavs = 0;
+
+		// struct BoundResourceDesc
+		// {
+		// 	std::string name;
+		// 	uint8_t type;
+		// 	uint8_t dimension;
+		// 	uint16_t bind_point;
+		// };
+		// std::vector<BoundResourceDesc> res_desc;
+	};
 	struct ShaderDesc
 	{
 		ShaderDesc()
@@ -154,6 +189,11 @@ namespace KlayGE
 			RenderTechnique const & tech, RenderPass const & pass,
 			std::vector<std::pair<char const *, char const *>> const & api_special_macros,
 			char const * func_name, char const * shader_profile, uint32_t flags);
+		static std::vector<uint32_t> CompileToSPIRV(ShaderStage stage, RenderEffect const& effect,
+			RenderTechnique const & tech, RenderPass const & pass,
+			std::vector<std::pair<char const *, char const *>> const & api_special_macros,
+			char const * func_name, char const * shader_profile, uint32_t flags);
+		static SPIRVShaderDesc ReflectSPIRV(std::vector<uint32_t> const & code);
 		static void ReflectDXBC(std::vector<uint8_t> const & code, void** reflector);
 		static std::vector<uint8_t> StripDXBC(std::vector<uint8_t> const & code, uint32_t strip_flags);
 

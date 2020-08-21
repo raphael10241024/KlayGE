@@ -561,6 +561,12 @@ target_link_libraries(${LIB_NAME}
 		kfont
 		7zxa
 		LZMA
+		glslang
+		SPIRV
+		glslang-default-resource-limits
+		spirv-cross-core
+		spirv-cross-cpp
+		spirv-cross-reflect
 )
 if(KLAYGE_PLATFORM_WINDOWS)
 	target_link_libraries(${LIB_NAME}
@@ -600,7 +606,7 @@ elseif(KLAYGE_PLATFORM_IOS)
 	)
 endif()
 
-add_dependencies(${LIB_NAME} KFL kfont 7zxa LZMA TableGen)
+add_dependencies(${LIB_NAME} KFL kfont 7zxa LZMA TableGen glslang SPIRV glslang-default-resource-limits  spirv-cross-core spirv-cross-cpp spirv-cross-reflect)
 if(KLAYGE_PLATFORM_LINUX)
 	add_dependencies(${LIB_NAME} glloader)
 elseif(KLAYGE_PLATFORM_ANDROID)

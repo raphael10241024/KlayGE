@@ -27,6 +27,7 @@ CfgBuild.py
 *_vc*_*_*
 *_clang*_*_*
 .vs
+.vscode
 lib
 glloader/doc/html/
 glloader/include/glloader/glloader_egl.h
@@ -102,3 +103,5 @@ External/rapidxml
 External/string-view-lite
 External/wpftoolkit
 External/zlib
+External/glslang
+External/SPIRV-Cross

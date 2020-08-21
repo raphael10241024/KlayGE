@@ -39,6 +39,7 @@
 #include <KlayGE/RenderEngine.hpp>
 #include <KlayGE/ResLoader.hpp>
 #include <KFL/CustomizedStreamBuf.hpp>
+#include <KFL/Hash.hpp>
 
 #include <string>
 #include <vector>
@@ -53,6 +54,13 @@
 #ifdef KLAYGE_PLATFORM_WINDOWS
 #define CALL_D3DCOMPILER_DIRECTLY
 #endif
+
+#include <glslang/Public/ShaderLang.h>
+#include <SPIRV/GlslangToSpv.h>
+#include <StandAlone/ResourceLimits.h>
+#include <SPIRV/SpvTools.h>
+#include <SPIRV/Logger.h>
+#include <spirv_reflect.hpp>
 
 #ifdef CALL_D3DCOMPILER_DIRECTLY
 #include <KlayGE/SALWrapper.hpp>
@@ -308,6 +316,109 @@ namespace
 		D3DReflectFunc DynamicD3DReflect_;
 		D3DStripShaderFunc DynamicD3DStripShader_;
 #endif
+	};
+
+	class HLSLToSpirVCompilerLoader
+	{
+	public:
+		static HLSLToSpirVCompilerLoader& Instance()
+		{
+			static HLSLToSpirVCompilerLoader inter;
+			return inter;
+		}
+
+		bool SPIRVCompile(std::string const& src_data, EShLanguage lang, const char* defines, std::vector<std::string> processes, char const* entry_point, char const* target, std::vector<uint32_t>& code, std::string& error_msgs) const
+		{
+			glslang::InitializeProcess();
+			glslang::TShader* shader = new glslang::TShader(lang);
+			glslang::TProgram* program = new glslang::TProgram();
+
+			const char* shaderStrings[] = {src_data.c_str()};
+			shader->setStrings(shaderStrings, 1);
+			shader->setSourceEntryPoint(entry_point);
+			shader->setPreamble(defines);
+			shader->addProcesses(processes);
+			shader->setEnvInput(glslang::EShSourceHlsl, lang, glslang::EShClientVulkan, 100);
+			shader->setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_0);
+			shader->setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
+
+			TBuiltInResource defaultLimits = glslang::DefaultTBuiltInResource;
+
+			EShMessages messages = EShMessages(0 | EShMsgDefault | EShMsgReadHlsl | EShMsgVulkanRules | EShMsgSpvRules);
+			bool compiled = shader->parse(&defaultLimits, 110, false, messages);
+			bool linked = false;
+			if (!compiled)
+			{
+				error_msgs.append(shader->getInfoLog());
+			}
+			else
+			{
+				program->addShader(shader);
+				linked = true && program->link(messages) && program->mapIO();
+				if (!linked)
+				{
+					error_msgs.append(shader->getInfoLog());
+				}
+				else
+				{
+					//program->buildReflection();
+
+					glslang::SpvOptions options;
+					options.generateDebugInfo = true;
+					options.validate = true;
+					options.disableOptimizer = false;
+					glslang::GlslangToSpv(*program->getIntermediate(lang), code, &options);
+				}
+			}
+			KFL_UNUSED(src_data);
+			KFL_UNUSED(lang);
+			KFL_UNUSED(defines);
+			KFL_UNUSED(entry_point);
+			KFL_UNUSED(target);
+			KFL_UNUSED(code);
+			KFL_UNUSED(error_msgs);
+			delete shader;
+			delete program;
+
+			glslang::FinalizeProcess();
+
+			return compiled && linked;
+		}
+
+		SPIRVShaderDesc ReflectSPIRV(std::vector<uint32_t> code)
+		{
+			spirv_cross::CompilerReflection refl(code);
+			spirv_cross::ShaderResources resources =  refl.get_shader_resources();
+			SPIRVShaderDesc desc;
+
+			for(auto r : resources.uniform_buffers)
+			{
+				SPIRVShaderDesc::ConstantBufferDesc cdesc;
+				spirv_cross::SPIRType type = refl.get_type(r.type_id);
+				cdesc.name = r.name;
+				cdesc.name_hash = RT_HASH(r.name.c_str());
+				cdesc.size = static_cast<uint32_t>(refl.get_declared_struct_size(type));
+				for (int i = 0; i < type.member_types.size(); i++)
+				{
+					SPIRVShaderDesc::ConstantBufferDesc::VariableDesc vdesc;
+					spirv_cross::SPIRType p = refl.get_type(type.member_types[i]);
+					vdesc.type = static_cast<uint8_t>(p.basetype);
+					vdesc.rows = static_cast<uint8_t>(p.vecsize);
+					vdesc.columns = static_cast<uint8_t>(p.columns);
+					vdesc.elements = static_cast<uint16_t>(p.vecsize * p.columns);
+					vdesc.start_offset = refl.type_struct_member_offset(type, i);
+					vdesc.name = refl.get_member_name(type.self, i);
+
+					cdesc.var_desc.push_back(vdesc);
+				}
+
+				desc.cb_desc.push_back(cdesc);
+			}
+			return desc;
+		}
+	private:
+
+		HLSLToSpirVCompilerLoader() = default;
 	};
 }
 
@@ -565,6 +676,143 @@ namespace KlayGE
 		std::vector<uint8_t> ret;
 		D3DCompilerLoader::Instance().D3DStripShader(code, strip_flags, ret);
 		return ret;
+	}
+
+	std::vector<uint32_t> ShaderStageObject::CompileToSPIRV(ShaderStage stage, RenderEffect const& effect,
+		RenderTechnique const& tech,
+		RenderPass const& pass, std::vector<std::pair<char const*, char const*>> const& api_special_macros, char const* func_name,
+		char const* shader_profile, uint32_t flags)
+	{
+		KFL_UNUSED(shader_profile);
+		KFL_UNUSED(flags);
+		RenderEngine const& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
+		RenderDeviceCaps const& caps = re.DeviceCaps();
+
+		std::vector<uint32_t> code;
+
+		std::string const& hlsl_shader_text = effect.HLSLShaderText();
+
+		std::string max_sm_str = std::to_string(caps.max_shader_model.FullVersion());
+		std::string max_tex_array_str = std::to_string(caps.max_texture_array_length);
+		std::string max_tex_depth_str = std::to_string(caps.max_texture_depth);
+		std::string max_tex_units_str = std::to_string(static_cast<int>(caps.max_pixel_texture_units));
+		std::string flipping_str = std::to_string(re.RequiresFlipping() ? -1 : +1);
+		std::string render_to_tex_array_str = std::to_string(caps.render_to_texture_array_support ? 1 : 0);
+
+		std::string err_msg;
+		std::string macros;
+		std::vector<std::string> processes;
+
+		auto append_macro = [&macros, &processes](const char* a, const char* b) {
+			std::string def(a);
+			def.append("=");
+			def.append(b);
+			processes.push_back("define-macro " + def);
+
+			def[strlen(a)] = ' ';
+			macros.append("#define " + def + "\n");
+		};
+
+		for (uint32_t i = 0; i < api_special_macros.size(); ++i)
+		{
+			append_macro(api_special_macros[i].first, api_special_macros[i].second);
+		}
+
+		append_macro("KLAYGE_SHADER_MODEL", max_sm_str.c_str());
+		append_macro("KLAYGE_MAX_TEX_ARRAY_LEN", max_tex_array_str.c_str());
+		append_macro("KLAYGE_MAX_TEX_DEPTH", max_tex_depth_str.c_str());
+		append_macro("KLAYGE_MAX_TEX_UNITS", max_tex_units_str.c_str());
+		append_macro("KLAYGE_FLIPPING", flipping_str.c_str());
+		append_macro("KLAYGE_RENDER_TO_TEX_ARRAY", render_to_tex_array_str.c_str());
+		if (!caps.fp_color_support)
+		{
+			append_macro("KLAYGE_NO_FP_COLOR", "1");
+		}
+		if (caps.pack_to_rgba_required)
+		{
+			append_macro("KLAYGE_PACK_TO_RGBA", "1");
+		}
+		if (caps.UavFormatSupport(EF_ABGR16F))
+		{
+			append_macro("KLAYGE_TYPED_UAV_SUPPORT", "1");
+		}
+		if (caps.uavs_at_every_stage_support)
+		{
+			append_macro("KLAYGE_UAVS_AT_EVERY_STAGE_SUPPORT", "1");
+		}
+		if (caps.explicit_multi_sample_support)
+		{
+			append_macro("KLAYGE_EXPLICIT_MULTI_SAMPLE_SUPPORT", "1");
+		}
+		if (caps.vp_rt_index_at_every_stage_support)
+		{
+			append_macro("KLAYGE_VP_RT_INDEX_AT_EVERY_STAGE_SUPPORT", "1");
+		}
+		EShLanguage lang;
+		{
+			const char* shader_stage;
+			switch (stage)
+			{
+			case ShaderStage::Vertex:
+				shader_stage = "KLAYGE_VERTEX_SHADER";
+				lang = EShLangVertex;
+				break;
+
+			case ShaderStage::Pixel:
+				shader_stage = "KLAYGE_PIXEL_SHADER";
+				lang = EShLangFragment;
+				break;
+
+			case ShaderStage::Geometry:
+				shader_stage = "KLAYGE_GEOMETRY_SHADER";
+				lang = EShLangGeometry;
+				break;
+
+			case ShaderStage::Compute:
+				shader_stage = "KLAYGE_COMPUTE_SHADER";
+				lang = EShLangCompute;
+				break;
+
+			case ShaderStage::Hull:
+				shader_stage = "KLAYGE_HULL_SHADER";
+				lang = EShLangTessControl;
+				break;
+
+			case ShaderStage::Domain:
+				shader_stage = "KLAYGE_DOMAIN_SHADER";
+				lang = EShLangTessEvaluation;
+				break;
+
+			default:
+				KFL_UNREACHABLE("Invalid shader stage");
+			}
+			append_macro(shader_stage, "1");
+		}
+
+		for (uint32_t i = 0; i < tech.NumMacros(); ++i)
+		{
+			std::pair<std::string, std::string> const& name_value = tech.MacroByIndex(i);
+			append_macro(name_value.first.c_str(), name_value.second.c_str());
+		}
+
+		for (uint32_t i = 0; i < pass.NumMacros(); ++i)
+		{
+			std::pair<std::string, std::string> const& name_value = pass.MacroByIndex(i);
+			append_macro(name_value.first.c_str(), name_value.second.c_str());
+		}
+
+		if (!HLSLToSpirVCompilerLoader::Instance().SPIRVCompile(
+			hlsl_shader_text, lang, macros.c_str(), processes, func_name, shader_profile, code, err_msg))
+		{
+			TMSG(err_msg);
+		}
+		return code;
+	}
+
+
+	SPIRVShaderDesc ShaderStageObject::ReflectSPIRV( std::vector<uint32_t> const & code)
+	{
+		return HLSLToSpirVCompilerLoader::Instance().ReflectSPIRV(code);
 	}
 #endif
 

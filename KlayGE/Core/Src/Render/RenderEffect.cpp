@@ -5043,6 +5043,9 @@ namespace KlayGE
 		need_compile_ = false;
 #endif
 		ResIdentifierPtr kfx_source = ResLoader::Instance().Open(kfx_name);
+
+		kfx_source = nullptr;
+
 		if (!kfx_source || !this->StreamIn(*kfx_source, effect))
 		{
 #if KLAYGE_IS_DEV_PLATFORM
